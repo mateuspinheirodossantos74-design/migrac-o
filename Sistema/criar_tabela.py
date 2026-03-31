@@ -7,23 +7,24 @@ conn = mysql.connector.connect(
     database="railway",
     port=25644
 )
+
 cursor = conn.cursor()
 
-# Criar tabela
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS usuarios (
-    id INT PRIMARY KEY AUTO_INCREMENT,
+CREATE TABLE IF NOT EXISTS colaboradores (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     nome VARCHAR(100) NOT NULL,
     usuario VARCHAR(50) NOT NULL UNIQUE,
-    senha VARCHAR(255) NOT NULL,
-    cargo VARCHAR(50) NOT NULL,
-    funcao VARCHAR(100),
+    senha_hash VARCHAR(255) NOT NULL,
     nivel_acesso VARCHAR(50) NOT NULL,
-    data_criacao DATE NOT NULL
+    primeiro_acesso BOOLEAN DEFAULT TRUE,
+    ativo BOOLEAN DEFAULT TRUE,
+    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """)
 
-print("Tabela 'usuarios' criada com sucesso!")
+print("Tabela colaboradores criada!")
 
 cursor.close()
 conn.close()
+
