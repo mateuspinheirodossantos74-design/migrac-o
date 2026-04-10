@@ -1,7 +1,27 @@
 import streamlit as st
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
-from modulos.conexao import conectar
+from modulos.conexao import get_connection
+
+
+# ==========================
+# BASE COM JOIN
+# ==========================
+def base_from():
+    return """
+    FROM base_operacional b
+    LEFT JOIN (
+        SELECT box, MAX(setor) as setor
+        FROM mapa_box_setor
+        GROUP BY box
+    ) m ON b.box = m.box
+    LEFT JOIN (
+        SELECT wave, MAX(demanda) as demanda
+        FROM demanda
+        GROUP BY wave
+    ) d ON b.wave = d.wave
+    WHERE 1=1
+    """
 
 
 # ==========================
@@ -12,140 +32,102 @@ def montar_where(filtros):
 
     if filtros["wave"]:
         waves = ",".join([f"'{w}'" for w in filtros["wave"]])
-        where.append(f"wave IN ({waves})")
+        where.append(f"b.wave IN ({waves})")
 
     if filtros["setor"]:
         valores = ",".join([f"'{v}'" for v in filtros["setor"]])
-        where.append(f"setor IN ({valores})")
-
-    if filtros["departamento"]:
-        valores = ",".join([f"'{v}'" for v in filtros["departamento"]])
-        where.append(f"departamento IN ({valores})")
+        where.append(f"m.setor IN ({valores})")
 
     if filtros["demanda"]:
         valores = ",".join([f"'{v}'" for v in filtros["demanda"]])
-        where.append(f"demanda IN ({valores})")
+        where.append(f"d.demanda IN ({valores})")
 
     return " AND ".join(where)
 
 
 # ==========================
-# QUERIES OTIMIZADAS
+# QUERIES
 # ==========================
 @st.cache_data(ttl=60)
 def get_grupos(where_sql=""):
-    conn = conectar()
-    cursor = conn.cursor(dictionary=True)
+    conn = get_connection()
 
     query = f"""
     SELECT
-        grupo_tarefa,
-        COUNT(DISTINCT tarefa) as qtde_tarefas,
-        SUM(qtde_pecas_item) as qtde_pecas_pendentes,
-        COUNT(DISTINCT local_picking) as qtde_locais
-    FROM base_operacional
-    WHERE status_olpn = 'Created'
+        b.grupo_tarefa,
+        COUNT(DISTINCT b.tarefa) as qtde_tarefas,
+        SUM(b.qtde_pecas_item) as qtde_pecas_pendentes,
+        COUNT(DISTINCT b.local_picking) as qtde_locais
+    {base_from()}
+    AND b.status_olpn = 'Created'
     {f"AND {where_sql}" if where_sql else ""}
-    GROUP BY grupo_tarefa
+    GROUP BY b.grupo_tarefa
     ORDER BY qtde_pecas_pendentes DESC
     """
 
-    cursor.execute(query)
-    df = pd.DataFrame(cursor.fetchall())
+    df = pd.read_sql(query, conn)
     conn.close()
     return df
 
 
 @st.cache_data(ttl=60)
 def get_detalhamento(grupo, where_sql=""):
-    conn = conectar()
-    cursor = conn.cursor(dictionary=True)
+    conn = get_connection()
 
     query = f"""
     SELECT
-        tarefa,
-        COUNT(DISTINCT local_picking) as qtde_locais,
-        SUM(qtde_pecas_item) as qtde_pecas,
-        status_olpn
-    FROM base_operacional
-    WHERE status_olpn = 'Created'
-    AND grupo_tarefa = '{grupo}'
+        b.tarefa,
+        COUNT(DISTINCT b.local_picking) as qtde_locais,
+        SUM(b.qtde_pecas_item) as qtde_pecas,
+        b.status_olpn
+    {base_from()}
+    AND b.status_olpn = 'Created'
+    AND b.grupo_tarefa = '{grupo}'
     {f"AND {where_sql}" if where_sql else ""}
-    GROUP BY tarefa, status_olpn
+    GROUP BY b.tarefa, b.status_olpn
     ORDER BY qtde_pecas DESC
     """
 
-    cursor.execute(query)
-    df = pd.DataFrame(cursor.fetchall())
+    df = pd.read_sql(query, conn)
     conn.close()
     return df
 
 
 @st.cache_data(ttl=60)
 def get_metricas(where_sql=""):
-    conn = conectar()
-    cursor = conn.cursor(dictionary=True)
+    conn = get_connection()
 
     query = f"""
     SELECT
-        SUM(CASE WHEN status_olpn = 'Created' THEN qtde_pecas_item ELSE 0 END) as created,
-        SUM(CASE WHEN status_olpn = 'Packed' THEN qtde_pecas_item ELSE 0 END) as packed,
-        SUM(qtde_pecas_item) as total
-    FROM base_operacional
-    {f"WHERE {where_sql}" if where_sql else ""}
+        SUM(CASE WHEN b.status_olpn = 'Created' THEN b.qtde_pecas_item ELSE 0 END) as created,
+        SUM(CASE WHEN b.status_olpn = 'Packed' THEN b.qtde_pecas_item ELSE 0 END) as packed,
+        SUM(b.qtde_pecas_item) as total
+    {base_from()}
+    {f"AND {where_sql}" if where_sql else ""}
     """
 
-    cursor.execute(query)
-    result = cursor.fetchone()
+    result = pd.read_sql(query, conn).iloc[0]
     conn.close()
     return result
 
 
 @st.cache_data(ttl=60)
 def get_pecas(where_sql=""):
-    conn = conectar()
-    cursor = conn.cursor(dictionary=True)
+    conn = get_connection()
 
     query = f"""
     SELECT
-        grupo_tarefa,
-        SUM(qtde_pecas_item) as qtde_pecas_separadas
-    FROM base_operacional
-    WHERE status_olpn = 'Packed'
+        b.grupo_tarefa,
+        SUM(b.qtde_pecas_item) as qtde_pecas_separadas
+    {base_from()}
+    AND b.status_olpn = 'Packed'
     {f"AND {where_sql}" if where_sql else ""}
-    GROUP BY grupo_tarefa
+    GROUP BY b.grupo_tarefa
     ORDER BY qtde_pecas_separadas DESC
     """
 
-    cursor.execute(query)
-    df = pd.DataFrame(cursor.fetchall())
+    df = pd.read_sql(query, conn)
     conn.close()
-    return df
-
-
-@st.cache_data(ttl=60)
-def get_departamento(where_sql=""):
-    conn = conectar()
-    cursor = conn.cursor(dictionary=True)
-
-    query = f"""
-    SELECT
-        departamento,
-        SUM(qtde_pecas_item) as total,
-        SUM(CASE WHEN status_olpn = 'Packed' THEN qtde_pecas_item ELSE 0 END) as packed
-    FROM base_operacional
-    {f"WHERE {where_sql}" if where_sql else ""}
-    GROUP BY departamento
-    ORDER BY total DESC
-    """
-
-    cursor.execute(query)
-    df = pd.DataFrame(cursor.fetchall())
-    conn.close()
-
-    df["created"] = df["total"] - df["packed"]
-    df["%_completo"] = (df["packed"] / df["total"] * 100).round(1)
-
     return df
 
 
@@ -165,7 +147,6 @@ def render():
     filtros = {
         "wave": st.sidebar.text_input("Wave (ex: 123,456)").split(","),
         "setor": st.sidebar.multiselect("Setor", []),
-        "departamento": st.sidebar.multiselect("Departamento", []),
         "demanda": st.sidebar.multiselect("Demanda", [])
     }
 
@@ -176,7 +157,7 @@ def render():
     # ==========================
     # ABAS
     # ==========================
-    aba1, aba2, aba3 = st.tabs(["🏠 Início", "📦 Peças", "🏢 Departamento"])
+    aba1, aba2 = st.tabs(["🏠 Início", "📦 Peças"])
 
     # ==========================
     # INICIO
@@ -203,19 +184,4 @@ def render():
         col3.metric("Total", int(m["total"] or 0))
 
         df = get_pecas(where_sql)
-        st.dataframe(df, use_container_width=True)
-
-    # ==========================
-    # DEPARTAMENTO
-    # ==========================
-    with aba3:
-        df = get_departamento(where_sql)
-
-        m = get_metricas(where_sql)
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total", int(m["total"] or 0))
-        col2.metric("Packed", int(m["packed"] or 0))
-        col3.metric("%", round((m["packed"] / m["total"] * 100), 1) if m["total"] else 0)
-
         st.dataframe(df, use_container_width=True)
