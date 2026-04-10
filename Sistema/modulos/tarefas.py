@@ -1,27 +1,7 @@
 import streamlit as st
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
-from modulos.conexao import get_connection
-
-
-# ==========================
-# BASE COM JOIN
-# ==========================
-def base_from():
-    return """
-    FROM base_operacional b
-    LEFT JOIN (
-        SELECT box, MAX(setor) as setor
-        FROM mapa_box_setor
-        GROUP BY box
-    ) m ON b.box = m.box
-    LEFT JOIN (
-        SELECT wave, MAX(demanda) as demanda
-        FROM demanda
-        GROUP BY wave
-    ) d ON b.wave = d.wave
-    WHERE 1=1
-    """
+from modulos.conexao import conectar
 
 
 # ==========================
@@ -32,11 +12,11 @@ def montar_where(filtros):
 
     if filtros["wave"]:
         waves = ",".join([f"'{w}'" for w in filtros["wave"]])
-        where.append(f"b.wave IN ({waves})")
+        where.append(f"bo.wave IN ({waves})")
 
     if filtros["setor"]:
         valores = ",".join([f"'{v}'" for v in filtros["setor"]])
-        where.append(f"m.setor IN ({valores})")
+        where.append(f"ms.setor IN ({valores})")
 
     if filtros["demanda"]:
         valores = ",".join([f"'{v}'" for v in filtros["demanda"]])
@@ -46,22 +26,32 @@ def montar_where(filtros):
 
 
 # ==========================
+# BASE COM JOIN (PADRÃO)
+# ==========================
+BASE_FROM = """
+FROM base_operacional bo
+LEFT JOIN mapa_box_setor ms ON bo.box = ms.box
+LEFT JOIN demanda d ON bo.wave = d.wave
+"""
+
+
+# ==========================
 # QUERIES
 # ==========================
 @st.cache_data(ttl=60)
 def get_grupos(where_sql=""):
-    conn = get_connection()
+    conn = conectar()
 
     query = f"""
     SELECT
-        b.grupo_tarefa,
-        COUNT(DISTINCT b.tarefa) as qtde_tarefas,
-        SUM(b.qtde_pecas_item) as qtde_pecas_pendentes,
-        COUNT(DISTINCT b.local_picking) as qtde_locais
-    {base_from()}
-    AND b.status_olpn = 'Created'
+        bo.grupo_tarefa,
+        COUNT(DISTINCT bo.tarefa) as qtde_tarefas,
+        SUM(bo.qtde_pecas_item) as qtde_pecas_pendentes,
+        COUNT(DISTINCT bo.local_picking) as qtde_locais
+    {BASE_FROM}
+    WHERE bo.status_olpn = 'Created'
     {f"AND {where_sql}" if where_sql else ""}
-    GROUP BY b.grupo_tarefa
+    GROUP BY bo.grupo_tarefa
     ORDER BY qtde_pecas_pendentes DESC
     """
 
@@ -72,19 +62,19 @@ def get_grupos(where_sql=""):
 
 @st.cache_data(ttl=60)
 def get_detalhamento(grupo, where_sql=""):
-    conn = get_connection()
+    conn = conectar()
 
     query = f"""
     SELECT
-        b.tarefa,
-        COUNT(DISTINCT b.local_picking) as qtde_locais,
-        SUM(b.qtde_pecas_item) as qtde_pecas,
-        b.status_olpn
-    {base_from()}
-    AND b.status_olpn = 'Created'
-    AND b.grupo_tarefa = '{grupo}'
+        bo.tarefa,
+        COUNT(DISTINCT bo.local_picking) as qtde_locais,
+        SUM(bo.qtde_pecas_item) as qtde_pecas,
+        bo.status_olpn
+    {BASE_FROM}
+    WHERE bo.status_olpn = 'Created'
+    AND bo.grupo_tarefa = '{grupo}'
     {f"AND {where_sql}" if where_sql else ""}
-    GROUP BY b.tarefa, b.status_olpn
+    GROUP BY bo.tarefa, bo.status_olpn
     ORDER BY qtde_pecas DESC
     """
 
@@ -95,34 +85,35 @@ def get_detalhamento(grupo, where_sql=""):
 
 @st.cache_data(ttl=60)
 def get_metricas(where_sql=""):
-    conn = get_connection()
+    conn = conectar()
 
     query = f"""
     SELECT
-        SUM(CASE WHEN b.status_olpn = 'Created' THEN b.qtde_pecas_item ELSE 0 END) as created,
-        SUM(CASE WHEN b.status_olpn = 'Packed' THEN b.qtde_pecas_item ELSE 0 END) as packed,
-        SUM(b.qtde_pecas_item) as total
-    {base_from()}
-    {f"AND {where_sql}" if where_sql else ""}
+        SUM(CASE WHEN bo.status_olpn = 'Created' THEN bo.qtde_pecas_item ELSE 0 END) as created,
+        SUM(CASE WHEN bo.status_olpn = 'Packed' THEN bo.qtde_pecas_item ELSE 0 END) as packed,
+        SUM(bo.qtde_pecas_item) as total
+    {BASE_FROM}
+    {f"WHERE {where_sql}" if where_sql else ""}
     """
 
-    result = pd.read_sql(query, conn).iloc[0]
+    df = pd.read_sql(query, conn)
     conn.close()
-    return result
+
+    return df.iloc[0].to_dict() if not df.empty else {"created": 0, "packed": 0, "total": 0}
 
 
 @st.cache_data(ttl=60)
 def get_pecas(where_sql=""):
-    conn = get_connection()
+    conn = conectar()
 
     query = f"""
     SELECT
-        b.grupo_tarefa,
-        SUM(b.qtde_pecas_item) as qtde_pecas_separadas
-    {base_from()}
-    AND b.status_olpn = 'Packed'
+        bo.grupo_tarefa,
+        SUM(bo.qtde_pecas_item) as qtde_pecas_separadas
+    {BASE_FROM}
+    WHERE bo.status_olpn = 'Packed'
     {f"AND {where_sql}" if where_sql else ""}
-    GROUP BY b.grupo_tarefa
+    GROUP BY bo.grupo_tarefa
     ORDER BY qtde_pecas_separadas DESC
     """
 
